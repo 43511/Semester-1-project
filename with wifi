@@ -1,0 +1,151 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <SPI.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7735.h>
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME280.h>
+
+const char* ssid = "TP-Link_008C";
+const char* password = "41486139";
+const char* serverUrl = "http://43511.github.io/repository"; // The URL of your web server script
+
+const int TFT_RST = 4;
+const int TFT_DC = 2;
+const int TFT_CS = 5;
+const int lm35Pin = 32;
+const int buttonPin = 14;
+const int blueLEDPin = 26;
+const int greenLEDPin = 25;
+#define SDA 21
+#define SCL 22
+
+bool potentialRain = false; // Variable to track potential rain
+
+// Create an instance of the TFT class
+Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
+Adafruit_BME280 bme; // I2C
+
+enum State {
+  READING_TEMPERATURE,
+  DISPLAYING_DATA
+};
+
+State currentState = DISPLAYING_DATA;  // Initial state
+
+void setup() {
+  Serial.begin(115200);  // Adjust the baud rate for debugging
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Connecting to WiFi...");
+  }
+
+  pinMode(lm35Pin, INPUT);
+  pinMode(buttonPin, INPUT_PULLUP);
+
+  tft.initR(INITR_BLACKTAB);
+  tft.setRotation(3); // landscape (3)
+  // Clear the screen and set text color
+  tft.fillScreen(ST77XX_BLACK);
+  tft.setTextColor(ST77XX_WHITE);
+  // Set the text size
+  tft.setTextSize(2);
+
+  // BME setup
+  if (!bme.begin(0x76)) {
+    tft.print("Could not find a valid BME280 sensor");
+    while (1);
+  }
+  pinMode(blueLEDPin, OUTPUT);
+  pinMode(greenLEDPin, OUTPUT);
+}
+
+void loop() {
+  switch (currentState) {
+    case READING_TEMPERATURE:
+      // Check if the button is pressed
+      if (digitalRead(buttonPin) == LOW) {
+        // If it's not currently reading temperature, start reading
+        if (currentState != READING_TEMPERATURE) {
+          currentState = READING_TEMPERATURE;
+        }
+        // If it's currently reading temperature, stop reading
+        else {
+          currentState = DISPLAYING_DATA;
+          tft.fillScreen(ST77XX_BLACK);
+        }
+        // Wait for the button to be released
+        while (digitalRead(buttonPin) == LOW);
+      }
+
+      // If it's reading temperature, get the temperature and display it
+      if (currentState == READING_TEMPERATURE) {
+        int rawValue = analogRead(lm35Pin);
+        float voltage = (rawValue / 100.0) * 3300.0;
+        float temperatureC = (voltage - 500) / 133.0;
+
+        // Clear the screen
+        tft.fillScreen(ST77XX_BLACK);
+
+        // Display the temperature on the screen
+        tft.setCursor(10, 10); // first is y, second is x
+        tft.print("Temperature: ");
+        tft.print(temperatureC);
+        tft.print(" C");
+        tft.println(); // Move to the next line
+
+        float humidity = bme.readHumidity();
+        tft.setCursor(10, 40); // Set the cursor for humidity, first is y, second is x
+        tft.print("Humidity: ");
+        tft.println();
+        tft.setCursor(10, 55);
+        tft.print(humidity);
+        tft.print(" %");
+        tft.println(); // Move to the next line
+
+        float pressure = bme.readPressure() / 100.0F;
+        tft.setCursor(10, 70); // Set the cursor for pressure, first is y, second is x
+        tft.print("Pressure: ");
+        tft.println();
+        tft.setCursor(10, 85);
+        tft.print(pressure);
+        tft.print(" hPa");
+
+        // Check the conditions for rain
+        if (humidity > 60 || temperatureC < 20.0 || pressure < 1000.0) {
+          digitalWrite(blueLEDPin, HIGH); // Turn on the blue LED
+          digitalWrite(greenLEDPin, LOW); // Turn off the green LED
+        } else {
+          digitalWrite(blueLEDPin, LOW); // Turn off the blue LED
+          digitalWrite(greenLEDPin, HIGH); // Turn on the green LED
+        }
+
+        // Wait for 5 seconds before taking the next reading, this time is in millis
+        delay(5000);
+      }
+      break;
+
+    case DISPLAYING_DATA:
+      HTTPClient http;
+      http.begin(serverUrl);
+
+      int httpCode = http.GET();
+      if (httpCode > 0) {
+        String payload = http.getString();
+        Serial.println(payload);
+      }
+
+      http.end();
+      delay(10000); // Send data every 10 seconds (adjust as needed)
+      
+      if (digitalRead(buttonPin) == LOW) {
+        currentState = READING_TEMPERATURE;
+        tft.fillScreen(ST77XX_BLACK);
+        while (digitalRead(buttonPin) == LOW);
+      }
+      break;
+  }
+}
